@@ -1,113 +1,164 @@
 import streamlit as st
 import requests
+import time
 import tempfile
 import os
-import subprocess
 from fpdf import FPDF
+from pydub import AudioSegment
 
 # Configuración inicial
-st.set_page_config(page_title="Transcriptor AssemblyAI", layout="wide")
-st.title("🗣️ Transcriptor con Diarización - AssemblyAI (ES)")
+st.set_page_config(page_title="Transcriptor Optimizado", layout="wide")
+st.title("🎧 Transcriptor de Audio ")
 
-# API Key de AssemblyAI
-API_KEY = "ae0301811a7c4e538bccafa2dbaca223"
+# API AssemblyAI
+ASSEMBLYAI_API_KEY = "ae0301811a7c4e538bccafa2dbaca223"
 upload_endpoint = "https://api.assemblyai.com/v2/upload"
 transcript_endpoint = "https://api.assemblyai.com/v2/transcript"
-headers = {"authorization": API_KEY}
+headers = {"authorization": ASSEMBLYAI_API_KEY}
 
-# Cargar archivos (máximo 5)
+# Estado de sesión
+if "transcripciones" not in st.session_state:
+    st.session_state.transcripciones = []
+
+if "procesados" not in st.session_state:
+    st.session_state.procesados = []
+
+if "pdf_ready" not in st.session_state:
+    st.session_state.pdf_ready = False
+
+if "pdf_temp_path" not in st.session_state:
+    st.session_state.pdf_temp_path = None
+
+# Botón de descarga visible al inicio si ya hay PDF generado
+if st.session_state.pdf_ready and os.path.exists(st.session_state["pdf_temp_path"]):
+    with open(st.session_state["pdf_temp_path"], "rb") as f:
+        st.download_button(
+            label="📄 Descargar PDF con hablantes y tiempos",
+            data=f.read(),
+            file_name="transcripciones_diarizadas.pdf",
+            mime="application/pdf"
+        )
+
+# Contenedor superior para resultados
+transcripciones_container = st.container()
+
+# Uploader de archivos
 uploaded_files = st.file_uploader(
-    "Sube hasta 5 archivos de audio (.wav)", type=["wav"],
+    "Sube hasta 5 archivos de audio (.wav)",
+    type=["wav"],
     accept_multiple_files=True
 )
 
+# Funciones auxiliares
+def subir_audio(file_path):
+    with open(file_path, 'rb') as f:
+        response = requests.post(upload_endpoint, headers=headers, data=f)
+    return response.json()['upload_url']
+
+def solicitar_transcripcion(audio_url):
+    data = {
+        "audio_url": audio_url,
+        "speaker_labels": True,
+        "language_code": "es",
+        "auto_chapters": False
+    }
+    response = requests.post(transcript_endpoint, json=data, headers=headers)
+    return response.json()['id']
+
+def esperar_transcripcion(transcript_id, progress_bar):
+    intentos = 0
+    while True:
+        response = requests.get(f"{transcript_endpoint}/{transcript_id}", headers=headers)
+        status = response.json()['status']
+        if status == "completed":
+            progress_bar.progress(100)
+            return response.json()
+        elif status == "error":
+            raise Exception(response.json()['error'])
+        intentos += 1
+        progress_bar.progress(min(90, intentos * 5))
+        time.sleep(5)
+
+def formatear_tiempo(segundos):
+    minutos = int(segundos // 60)
+    segundos_restantes = int(segundos % 60)
+    return f"{minutos:02}:{segundos_restantes:02}"
+
+# Procesamiento de archivos
 if uploaded_files:
-    if len(uploaded_files) > 5:
-        st.error("⚠️ Solo se permiten hasta 5 archivos.")
-    else:
-        transcripciones = []
+    for file in uploaded_files:
+        if file.name in st.session_state.procesados:
+            continue
 
-        for file in uploaded_files:
-            st.subheader(f"🎧 Archivo: {file.name}")
-            st.audio(file, format="audio/wav")
+        progress_bar = st.progress(0)
 
-            # Convertir a 16kHz con ffmpeg
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp_input:
-                tmp_input.write(file.read())
-                tmp_input.flush()
-                tmp_output_path = tmp_input.name.replace(".wav", "_16k.wav")
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
+            tmp.write(file.getbuffer())
+            tmp_path = tmp.name
 
-                command = [
-                    "ffmpeg", "-i", tmp_input.name,
-                    "-ar", "16000", "-ac", "1", tmp_output_path,
-                    "-y"
-                ]
-                subprocess.run(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:
+            # Convertir a mono y 16kHz PCM
+            audio = AudioSegment.from_file(tmp_path)
+            audio = audio.set_channels(1)
+            audio = audio.set_frame_rate(16000)
+            converted_path = tmp_path.replace(".wav", "_converted.wav")
+            audio.export(converted_path, format="wav")
 
-            # Subir archivo a AssemblyAI
-            with open(tmp_output_path, 'rb') as f:
-                response = requests.post(upload_endpoint, headers=headers, data=f)
-            audio_url = response.json()['upload_url']
+            audio_url = subir_audio(converted_path)
+            progress_bar.progress(30)
+            transcript_id = solicitar_transcripcion(audio_url)
+            progress_bar.progress(50)
+            result = esperar_transcripcion(transcript_id, progress_bar)
 
-            # Enviar a transcripción
-            payload = {
-                "audio_url": audio_url,
-                "language_code": "es",
-                "speaker_labels": True,
-                "diarization": True,
-                "punctuate": True,
-                "format_text": True
-            }
-            response = requests.post(transcript_endpoint, json=payload, headers=headers)
-            transcript_id = response.json()['id']
+            texto_formateado = ""
+            for utt in result['utterances']:
+                start = formatear_tiempo(utt['start'] / 1000)
+                end = formatear_tiempo(utt['end'] / 1000)
+                speaker = utt['speaker']
+                texto = utt['text']
+                texto_formateado += f"[{start} - {end}] {speaker}: {texto}\n"
 
-            # Esperar resultado
-            status = "queued"
-            with st.spinner("🔄 Transcribiendo... esto puede tardar unos segundos."):
-                while status not in ["completed", "error"]:
-                    polling = requests.get(f"{transcript_endpoint}/{transcript_id}", headers=headers).json()
-                    status = polling["status"]
+            # Guardar info de transcripción
+            st.session_state.transcripciones.append((file.name, texto_formateado))
+            st.session_state.procesados.append(file.name)
 
-            if status == "completed":
-                utterances = polling.get("utterances", [])
-                texto_completo = ""
-                for utt in utterances:
-                    speaker = utt['speaker']
-                    start = utt['start'] // 1000
-                    texto = utt['text']
-                    texto_completo += f"[{start}s] Speaker {speaker}: {texto}\n"
-                transcripciones.append((file.name, texto_completo))
-                st.success("✅ Transcripción exitosa")
-                st.text_area("Transcripción:", value=texto_completo, height=200)
-            else:
-                st.error("❌ Error en la transcripción")
+            # Mostrar resultados arriba
+            with transcripciones_container:
+                st.markdown("---")
+                st.subheader(f"🎧 Archivo: {file.name}")
+                st.audio(converted_path, format="audio/wav")
+                st.info(f"🎛️ Audio optimizado a: {audio.frame_rate} Hz, {audio.channels} canal(es), duración: {round(audio.duration_seconds, 2)}s")
+                st.success("✅ Transcripción lista con hablantes y tiempos")
 
-            os.remove(tmp_input.name)
-            os.remove(tmp_output_path)
+        except Exception as e:
+            st.error(f"❌ Error: {e}")
 
-        # Exportar a PDF
-        if transcripciones:
-            pdf = FPDF()
-            pdf.add_page()
-            pdf.set_font("Arial", size=12)
-            pdf.cell(200, 10, "Transcripciones - AssemblyAI", ln=True, align="C")
-            pdf.ln(10)
+        finally:
+            os.remove(tmp_path)
+            if os.path.exists(converted_path):
+                os.remove(converted_path)
 
-            for nombre, texto in transcripciones:
-                pdf.set_font("Arial", style="B", size=12)
-                pdf.cell(200, 10, f"Archivo: {nombre}", ln=True)
-                pdf.set_font("Arial", size=12)
-                for linea in texto.split('\n'):
-                    pdf.multi_cell(0, 10, linea)
-                pdf.ln(5)
+# Generar PDF cuando todas las transcripciones estén listas
+if st.session_state.transcripciones and not st.session_state.pdf_ready:
+    pdf = FPDF()
 
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as pdf_file:
-                pdf.output(pdf_file.name)
-                with open(pdf_file.name, "rb") as f:
-                    st.download_button(
-                        label="📄 Descargar PDF con transcripciones",
-                        data=f,
-                        file_name="transcripciones_assemblyai.pdf",
-                        mime="application/pdf"
-                    )
-                os.remove(pdf_file.name)
+    for nombre, texto in st.session_state.transcripciones:
+        pdf.add_page()  # 📄 NUEVA HOJA para cada transcripción
+        pdf.set_font("Arial", size=12)
+        pdf.cell(200, 10, "Transcripción con Hablantes y Tiempos", ln=True, align="C")
+        pdf.ln(10)
+
+        pdf.set_font("Arial", style="B", size=12)
+        pdf.cell(200, 10, f"Archivo: {nombre}", ln=True)
+        pdf.set_font("Arial", size=11)
+
+        for linea in texto.split('\n'):
+            pdf.multi_cell(0, 8, linea)
+        pdf.ln(5)
+
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as pdf_file:
+        pdf.output(pdf_file.name)
+        st.session_state.pdf_temp_path = pdf_file.name
+        st.session_state.pdf_ready = True
+
+    st.rerun()
