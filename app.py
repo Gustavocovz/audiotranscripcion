@@ -11,7 +11,7 @@ st.set_page_config(page_title="Transcriptor Optimizado", layout="wide")
 st.title("🎧 Transcriptor de Audio ")
 
 # API AssemblyAI
-ASSEMBLYAI_API_KEY = "ae0301811a7c4e538bccafa2dbaca223"
+ASSEMBLYAI_API_KEY = st.secrets["assemblyai_key"]
 upload_endpoint = "https://api.assemblyai.com/v2/upload"
 transcript_endpoint = "https://api.assemblyai.com/v2/transcript"
 headers = {"authorization": ASSEMBLYAI_API_KEY}
