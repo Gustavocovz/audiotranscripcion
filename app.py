@@ -2,15 +2,15 @@ import streamlit as st
 import requests
 import tempfile
 import os
-from pydub import AudioSegment
+import subprocess
 from fpdf import FPDF
 
 # Configuración inicial
 st.set_page_config(page_title="Transcriptor AssemblyAI", layout="wide")
 st.title("🗣️ Transcriptor con Diarización - AssemblyAI (ES)")
 
-# Configuración de AssemblyAI
-API_KEY = st.secrets["ASSEMBLYAI_API_KEY"]
+# API Key de AssemblyAI
+API_KEY = "ae0301811a7c4e538bccafa2dbaca223"
 upload_endpoint = "https://api.assemblyai.com/v2/upload"
 transcript_endpoint = "https://api.assemblyai.com/v2/transcript"
 headers = {"authorization": API_KEY}
@@ -31,15 +31,21 @@ if uploaded_files:
             st.subheader(f"🎧 Archivo: {file.name}")
             st.audio(file, format="audio/wav")
 
-            # Convertir a 16kHz y guardar temporalmente
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
-                audio = AudioSegment.from_wav(file)
-                audio = audio.set_frame_rate(16000).set_channels(1)
-                audio.export(tmp.name, format="wav")
-                audio_path = tmp.name
+            # Convertir a 16kHz con ffmpeg
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp_input:
+                tmp_input.write(file.read())
+                tmp_input.flush()
+                tmp_output_path = tmp_input.name.replace(".wav", "_16k.wav")
+
+                command = [
+                    "ffmpeg", "-i", tmp_input.name,
+                    "-ar", "16000", "-ac", "1", tmp_output_path,
+                    "-y"
+                ]
+                subprocess.run(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
             # Subir archivo a AssemblyAI
-            with open(audio_path, 'rb') as f:
+            with open(tmp_output_path, 'rb') as f:
                 response = requests.post(upload_endpoint, headers=headers, data=f)
             audio_url = response.json()['upload_url']
 
@@ -76,7 +82,8 @@ if uploaded_files:
             else:
                 st.error("❌ Error en la transcripción")
 
-            os.remove(audio_path)
+            os.remove(tmp_input.name)
+            os.remove(tmp_output_path)
 
         # Exportar a PDF
         if transcripciones:
