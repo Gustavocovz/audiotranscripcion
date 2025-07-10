@@ -8,13 +8,28 @@ from pydub import AudioSegment
 
 # Configuración inicial
 st.set_page_config(page_title="Transcriptor Optimizado", layout="wide")
-st.title("🎧 Transcriptor de Audio ")
+st.title("🎧 Transcriptor de Audio")
 
 # API AssemblyAI
 ASSEMBLYAI_API_KEY = st.secrets["assemblyai_key"]
 upload_endpoint = "https://api.assemblyai.com/v2/upload"
 transcript_endpoint = "https://api.assemblyai.com/v2/transcript"
 headers = {"authorization": ASSEMBLYAI_API_KEY}
+
+# Función para consultar saldo
+def consultar_saldo():
+    response = requests.get("https://api.assemblyai.com/v2/balance", headers=headers)
+    if response.status_code == 200:
+        saldo_usd = float(response.json()["balance"])
+        return saldo_usd
+    return None
+
+# Mostrar saldo actual
+saldo = consultar_saldo()
+if saldo is not None:
+    st.info(f"💰 Créditos disponibles en AssemblyAI: **${saldo:.2f} USD**")
+else:
+    st.warning("⚠️ No se pudo consultar el saldo en AssemblyAI.")
 
 # Estado de sesión
 if "transcripciones" not in st.session_state:
@@ -42,10 +57,10 @@ if st.session_state.pdf_ready and os.path.exists(st.session_state["pdf_temp_path
 # Contenedor superior para resultados
 transcripciones_container = st.container()
 
-# Uploader de archivos
+# Uploader de archivos .wav y .mp3
 uploaded_files = st.file_uploader(
-    "Sube hasta 5 archivos de audio (.wav)",
-    type=["wav"],
+    "Sube hasta 5 archivos de audio (.wav, .mp3)",
+    type=["wav", "mp3"],
     accept_multiple_files=True
 )
 
@@ -143,7 +158,7 @@ if st.session_state.transcripciones and not st.session_state.pdf_ready:
     pdf = FPDF()
 
     for nombre, texto in st.session_state.transcripciones:
-        pdf.add_page()  # 📄 NUEVA HOJA para cada transcripción
+        pdf.add_page()  # Nueva hoja por transcripción
         pdf.set_font("Arial", size=12)
         pdf.cell(200, 10, "Transcripción con Hablantes y Tiempos", ln=True, align="C")
         pdf.ln(10)
@@ -162,3 +177,4 @@ if st.session_state.transcripciones and not st.session_state.pdf_ready:
         st.session_state.pdf_ready = True
 
     st.rerun()
+
