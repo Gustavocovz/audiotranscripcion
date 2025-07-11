@@ -5,6 +5,12 @@ import tempfile
 import os
 from fpdf import FPDF
 from pydub import AudioSegment
+from pydub.utils import which
+
+
+#Indicar manualmente rutas a ffmpeg y ffprobe (necesario en Streamlit Cloud)
+AudioSegment.converter = which("ffmpeg")
+AudioSegment.ffprobe = which("ffprobe")
 
 # Configuración inicial
 st.set_page_config(page_title="Transcriptor Optimizado", layout="wide")
