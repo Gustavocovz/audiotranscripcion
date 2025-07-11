@@ -3,12 +3,12 @@ import requests
 import time
 import tempfile
 import os
-import subprocess
 from fpdf import FPDF
+from pydub import AudioSegment
 
 # Configuración inicial
 st.set_page_config(page_title="Transcriptor Optimizado", layout="wide")
-st.title("🎧 Transcriptor de Audio")
+st.title("🎧 Transcriptor de Audio ")
 
 # API AssemblyAI
 ASSEMBLYAI_API_KEY = st.secrets["assemblyai_key"]
@@ -16,20 +16,7 @@ upload_endpoint = "https://api.assemblyai.com/v2/upload"
 transcript_endpoint = "https://api.assemblyai.com/v2/transcript"
 headers = {"authorization": ASSEMBLYAI_API_KEY}
 
-# Consultar saldo
-def consultar_saldo():
-    response = requests.get("https://api.assemblyai.com/v2/balance", headers=headers)
-    if response.status_code == 200:
-        return float(response.json()["balance"])
-    return None
-
-saldo = consultar_saldo()
-if saldo is not None:
-    st.info(f"💰 Créditos disponibles en AssemblyAI: **${saldo:.2f} USD**")
-else:
-    st.warning("⚠️ No se pudo consultar el saldo en AssemblyAI.")
-
-# Estados
+# Estado de sesión
 if "transcripciones" not in st.session_state:
     st.session_state.transcripciones = []
 
@@ -42,7 +29,7 @@ if "pdf_ready" not in st.session_state:
 if "pdf_temp_path" not in st.session_state:
     st.session_state.pdf_temp_path = None
 
-# Botón de descarga si PDF está listo
+# Botón de descarga visible al inicio si ya hay PDF generado
 if st.session_state.pdf_ready and os.path.exists(st.session_state["pdf_temp_path"]):
     with open(st.session_state["pdf_temp_path"], "rb") as f:
         st.download_button(
@@ -52,17 +39,17 @@ if st.session_state.pdf_ready and os.path.exists(st.session_state["pdf_temp_path
             mime="application/pdf"
         )
 
-# Contenedor de transcripciones
+# Contenedor superior para resultados
 transcripciones_container = st.container()
 
-# Subida de archivos
+# Uploader de archivos
 uploaded_files = st.file_uploader(
-    "Sube hasta 5 archivos de audio (.wav, .mp3)",
+    "Sube hasta 5 archivos de audio (.wav o .mp3)",
     type=["wav", "mp3"],
     accept_multiple_files=True
 )
 
-# Funciones
+# Funciones auxiliares
 def subir_audio(file_path):
     with open(file_path, 'rb') as f:
         response = requests.post(upload_endpoint, headers=headers, data=f)
@@ -97,7 +84,7 @@ def formatear_tiempo(segundos):
     segundos_restantes = int(segundos % 60)
     return f"{minutos:02}:{segundos_restantes:02}"
 
-# Procesamiento
+# Procesamiento de archivos
 if uploaded_files:
     for file in uploaded_files:
         if file.name in st.session_state.procesados:
@@ -105,21 +92,18 @@ if uploaded_files:
 
         progress_bar = st.progress(0)
 
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
+        suffix = ".mp3" if file.name.lower().endswith(".mp3") else ".wav"
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
             tmp.write(file.getbuffer())
             tmp_path = tmp.name
 
         try:
-            # Convertir a mono y 16000 Hz usando ffmpeg
-            converted_path = tmp_path.replace(".wav", "_converted.wav")
-            ffmpeg_cmd = [
-                "ffmpeg", "-y",
-                "-i", tmp_path,
-                "-ac", "1",
-                "-ar", "16000",
-                converted_path
-            ]
-            subprocess.run(ffmpeg_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+            # Convertir a mono y 16kHz PCM
+            audio = AudioSegment.from_file(tmp_path)
+            audio = audio.set_channels(1)
+            audio = audio.set_frame_rate(16000)
+            converted_path = tmp_path.replace(suffix, "_converted.wav")
+            audio.export(converted_path, format="wav")
 
             audio_url = subir_audio(converted_path)
             progress_bar.progress(30)
@@ -135,6 +119,7 @@ if uploaded_files:
                 texto = utt['text']
                 texto_formateado += f"[{start} - {end}] {speaker}: {texto}\n"
 
+            # Guardar info de transcripción
             st.session_state.transcripciones.append((file.name, texto_formateado))
             st.session_state.procesados.append(file.name)
 
@@ -143,6 +128,7 @@ if uploaded_files:
                 st.markdown("---")
                 st.subheader(f"🎧 Archivo: {file.name}")
                 st.audio(converted_path, format="audio/wav")
+                st.info(f"🎛️ Audio optimizado a: {audio.frame_rate} Hz, {audio.channels} canal(es), duración: {round(audio.duration_seconds, 2)}s")
                 st.success("✅ Transcripción lista con hablantes y tiempos")
 
         except Exception as e:
@@ -153,7 +139,7 @@ if uploaded_files:
             if os.path.exists(converted_path):
                 os.remove(converted_path)
 
-# Generar PDF
+# Generar PDF cuando todas las transcripciones estén listas
 if st.session_state.transcripciones and not st.session_state.pdf_ready:
     pdf = FPDF()
 
@@ -177,5 +163,6 @@ if st.session_state.transcripciones and not st.session_state.pdf_ready:
         st.session_state.pdf_ready = True
 
     st.rerun()
+
 
 
