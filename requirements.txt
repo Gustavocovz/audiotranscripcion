@@ -1,4 +1,4 @@
-streamlit>=1.25.0
-requests>=2.25.0
-pydub>=0.25.1
-fpdf>=1.7.2
+pydub
+requests
+fpdf
+streamlit
